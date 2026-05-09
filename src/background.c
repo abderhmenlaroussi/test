@@ -313,27 +313,29 @@ void hitPlatform(Background *bg, int idx) {
     }
 }
 
-static void renderBGTexture(Background *bg, SDL_Renderer *renderer) {
+static void renderBGTexture(Background *bg, SDL_Renderer *renderer,
+                             int vpW, int vpH) {
     if (!bg->texFull) {
         SDL_SetRenderDrawColor(renderer, 3, 18, 8, 255);
-        SDL_RenderClear(renderer);
+        SDL_RenderFillRect(renderer, NULL);
         return;
     }
     int dstW    = (int)(bg->tileW * BG_SCALE_X);
     int scrollX = (int)bg->camX % dstW;
     for (int t = -1; t <= 2; t++) {
-        SDL_Rect dst = {t * dstW - scrollX, 0, dstW, SCREEN_HEIGHT};
+        SDL_Rect dst = {t * dstW - scrollX, 0, dstW, vpH};
         SDL_RenderCopy(renderer, bg->texFull, NULL, &dst);
     }
+    (void)vpW;
 }
 
 static void renderPlat(Platform *p, SDL_Renderer *renderer,
-                       const Background *bg) {
+                       const Background *bg, int vpW, int vpH) {
     if (p->isVoid || p->destroyed) return;
     int sx = p->rect.x - (int)bg->camX;
     int sy = p->rect.y - (int)bg->camY;
-    if (sx > SCREEN_WIDTH || sx + p->rect.w < 0) return;
-    if (sy > SCREEN_HEIGHT|| sy + p->rect.h < 0) return;
+    if (sx > vpW || sx + p->rect.w < 0) return;
+    if (sy > vpH || sy + p->rect.h < 0) return;
 
     SDL_Rect sr = {sx, sy, p->rect.w, p->rect.h};
     SDL_Color c = p->color;
@@ -354,16 +356,18 @@ static void renderPlat(Platform *p, SDL_Renderer *renderer,
 
 void afficherPlateformes(Background *bg, SDL_Renderer *renderer) {
     for (int i = 0; i < bg->platformCount; i++)
-        renderPlat(&bg->platforms[i], renderer, bg);
+        renderPlat(&bg->platforms[i], renderer, bg, SCREEN_WIDTH, SCREEN_HEIGHT);
 }
 
 void afficherBackground(Background *bg, SDL_Renderer *renderer,
                         DisplayMode mode, SDL_Rect *viewport) {
     (void)mode;
-    if (viewport) SDL_RenderSetViewport(renderer, viewport);
-    renderBGTexture(bg, renderer);
-    afficherPlateformes(bg, renderer);
-    if (viewport) SDL_RenderSetViewport(renderer, NULL);
+    /* vpW/vpH used for culling and tile height — caller manages SDL viewport */
+    int vpW = viewport ? viewport->w : SCREEN_WIDTH;
+    int vpH = viewport ? viewport->h : SCREEN_HEIGHT;
+    renderBGTexture(bg, renderer, vpW, vpH);
+    for (int i = 0; i < bg->platformCount; i++)
+        renderPlat(&bg->platforms[i], renderer, bg, vpW, vpH);
 }
 
 
@@ -425,6 +429,11 @@ void saisirNomJoueur(SDL_Renderer *renderer, char *outName) {
     char name[MAX_NAME_LEN] = {0};
     int  nameLen = 0, done = 0;
     SDL_Event e;
+    /* Flush held key events from gameplay without discarding text input */
+    SDL_StopTextInput();
+    SDL_Delay(150);
+    SDL_Event _flush;
+    while (SDL_PollEvent(&_flush)) { /* discard stale events */ }
     SDL_StartTextInput();
 
     while (!done) {
@@ -584,6 +593,9 @@ void chargerScores(Background *bg) {
 void afficherMeilleursScores(Background *bg, SDL_Renderer *renderer) {
     int running = 1;
     SDL_Event e;
+    /* Flush stale events (e.g. RETURN from name input) before showing scores */
+    SDL_Delay(100);
+    while (SDL_PollEvent(&e)) { /* discard */ }
     while (running) {
         SDL_SetRenderDrawColor(renderer, 0, 6, 3, 255);
         SDL_RenderClear(renderer);

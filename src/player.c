@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *STATE_FOLDERS[STATE_COUNT] = { "assets/sprites/idle/",   "assets/sprites/walk/" "assets/sprites/sprint/", "assets/sprites/jump/","assets/sprites/shoot/",  "assets/sprites/death/"};
+static const char *STATE_FOLDERS[STATE_COUNT] = { "assets/sprites/idle/",   "assets/sprites/walk/", "assets/sprites/sprint/", "assets/sprites/jump/","assets/sprites/shoot/",  "assets/sprites/death/"};
 static const int FRAME_COUNTS[STATE_COUNT] = {6, 6, 5, 5, 2, 4};
 static const int FRAME_DELAYS[STATE_COUNT] = {180,110,80,90,120,160};
 
@@ -48,7 +48,7 @@ int initialiserJoueur(Player *p, SDL_Renderer *renderer,PlayerID id, float start
     p->isAlive   = 1;
     p->lives     = 3;
     p->health    = 100;
-    p->lastDamageTime = 0;
+    p->lastDamageTime = SDL_GetTicks(); /* grace period: no damage for 600ms after spawn */
     p->damageEvent    = 0;
     p->camSmooth = 0.10f;
     p->camX      = startX - SCREEN_WIDTH / 2.0f;

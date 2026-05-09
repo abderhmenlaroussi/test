@@ -208,13 +208,16 @@ static void checkPlayerVsEnemy(Player *p, Enemy *e) {
     if (p->velY > 0 && (int)p->worldY + PLAYER_PH <= e->y + 20) {
         e->health -= 999; p->velY = -12.0f; p->score += 100; return;
     }
-    if (e->state == 2 && e->hit_cooldown == 0) {
-        p->health -= 20; if (p->health <= 0) p->isAlive = 0;
-        e->hit_cooldown = 90; return;
-    }
-    if (e->type == 1 && e->hit_cooldown == 0) {
-        p->health -= 20; if (p->health <= 0) p->isAlive = 0;
-        e->hit_cooldown = 90;
+    /* Use the player's own lastDamageTime so P1 and P2 each have
+       an independent damage cooldown — e->hit_cooldown is shared
+       and would block one player whenever the other got hit. */
+    Uint32 now = SDL_GetTicks();
+    int canHit = (now - p->lastDamageTime) > 1000;
+    if (canHit && (e->state == 2 || e->type == 1)) {
+        p->health -= 20;
+        p->lastDamageTime = now;
+        p->damageEvent = 1;
+        if (p->health <= 0) p->isAlive = 0;
     }
 }
 
@@ -223,10 +226,15 @@ static void renderHalf(SDL_Renderer *renderer, Background *bg,
                         Enemy *minions, int minionCount,
                         Enemy *boss, int bossActive) {
     SDL_RenderSetViewport(renderer, &vp);
-    SDL_RenderSetClipRect(renderer, &vp);
+    /* ClipRect is in viewport-local coords — always {0,0,w,h} */
+    SDL_Rect localClip = {0, 0, vp.w, vp.h};
+    SDL_RenderSetClipRect(renderer, &localClip);
+    /* Fill viewport with black */
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderFillRect(renderer, &localClip);
     float savedCam = bg->camX;
     bg->camX = p->camX;
-    afficherBackground(bg, renderer, MODE_MULTI, NULL);
+    afficherBackground(bg, renderer, MODE_MULTI, &vp);
     bg->camX = savedCam;
     for (int i = 0; i < minionCount; i++)
         render_enemy(&minions[i], renderer, (int)p->camX);
@@ -463,7 +471,7 @@ int main(int argc, char *argv[]) {
     float startY = (float)(508 - PLAYER_PH);
     Player p1, p2;
     initialiserJoueur(&p1, ren, PLAYER_1, 150.0f, startY);
-    initialiserJoueur(&p2, ren, PLAYER_2, 400.0f, startY);
+    initialiserJoueur(&p2, ren, PLAYER_2, 250.0f, startY);
 
     Enemy minions[MAX_MINIONS];
     memset(minions, 0, sizeof(minions));
@@ -542,7 +550,7 @@ int main(int argc, char *argv[]) {
                         Mix_HaltMusic();
                         initBackground(&bg, ren, currentLevel, dispMode);
                         initialiserJoueur(&p1, ren, PLAYER_1, 150.0f, startY);
-                        initialiserJoueur(&p2, ren, PLAYER_2, 400.0f, startY);
+                        initialiserJoueur(&p2, ren, PLAYER_2, 250.0f, startY);
                         resetEnemies(minions, MAX_MINIONS, &boss,
                                      &bossSpawned, &bossActive,
                                      &spawnTimer, ren, currentLevel);
@@ -658,6 +666,7 @@ int main(int argc, char *argv[]) {
             if (p1.damageEvent) {
                 printf(p1.isAlive ? "HIT\n" : "DEAD\n");
                 fflush(stdout);
+                p1.damageEvent = 0;
             }
 
             if (dispMode == MODE_MULTI)
@@ -682,9 +691,14 @@ int main(int argc, char *argv[]) {
                 if (!minions[i].alive) continue;
                 update_enemy(&minions[i], (int)p1.worldX);
                 checkPlayerVsEnemy(&p1, &minions[i]);
+                if (dispMode == MODE_MULTI)
+                    checkPlayerVsEnemy(&p2, &minions[i]);
             }
             checkBulletsVsEnemies(&p1, minions, MAX_MINIONS,
                                    &boss, bossActive);
+            if (dispMode == MODE_MULTI)
+                checkBulletsVsEnemies(&p2, minions, MAX_MINIONS,
+                                       &boss, bossActive);
 
             /* player death → save score → back to menu */
             if (!p1.isAlive) {
@@ -705,6 +719,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* ── RENDER ── */
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
         SDL_RenderClear(ren);
 
         if (state == APP_MAIN_MENU) {
@@ -743,13 +758,28 @@ int main(int argc, char *argv[]) {
         }
 
         else if (state == APP_SCORES) {
-            /* afficherMeilleursScores is blocking — we call it only once
-               per state entry (from event handler). Here we draw a simple
-               "press any key" screen while waiting for the next event. */
-            SDL_SetRenderDrawColor(ren, 0, 10, 0, 255);
+            SDL_SetRenderDrawColor(ren, 0, 6, 3, 255);
             SDL_Rect full = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
             SDL_RenderFillRect(ren, &full);
-            afficherMeilleursScores(&bg, ren);
+            drawTextCentered(ren, 40, 0, SCREEN_WIDTH, "MEILLEURS SCORES", 3, 0, 255, 70);
+            drawText(ren, 60, 110, "# NOM                SCORE NIV TEMPS", 1, 220, 180, 0);
+            SDL_SetRenderDrawColor(ren, 0, 200, 50, 255);
+            SDL_RenderDrawLine(ren, 60, 126, SCREEN_WIDTH - 60, 126);
+            if (bg.scoreCount == 0)
+                drawTextCentered(ren, 200, 0, SCREEN_WIDTH, "AUCUN SCORE ENREGISTRE", 2, 0, 140, 35);
+            for (int s = 0; s < bg.scoreCount && s < MAX_SCORES; s++) {
+                Score *sc = &bg.scores[s];
+                char sline[80];
+                snprintf(sline, sizeof(sline), "%-3d %-20s %5d  %2d %02d:%02d",
+                         s+1, sc->name, sc->score, sc->level,
+                         sc->time / 60, sc->time % 60);
+                Uint8 sr = (Uint8)((s==0)?220:180);
+                Uint8 sg = (Uint8)((s==0)?180:255);
+                Uint8 sb2 = (Uint8)((s==0)?0:180);
+                drawText(ren, 60, 140 + s*22, sline, 1, sr, sg, sb2);
+            }
+            drawTextCentered(ren, SCREEN_HEIGHT - 80, 0, SCREEN_WIDTH,
+                             "APPUYEZ SUR UNE TOUCHE OU RETOUR", 1, 0, 140, 35);
             backBtn.hover = tbtnHit(&backBtn, mx, my);
             tbtnDraw(ren, &backBtn);
         }
@@ -759,10 +789,27 @@ int main(int argc, char *argv[]) {
         }
 
         else if (state == APP_SAVE_SCREEN) {
-            SDL_SetRenderDrawColor(ren, 0, 10, 0, 255);
+            SDL_SetRenderDrawColor(ren, 0, 6, 3, 255);
             SDL_Rect full = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
             SDL_RenderFillRect(ren, &full);
-            afficherMeilleursScores(&bg, ren);
+            drawTextCentered(ren, 40, 0, SCREEN_WIDTH, "MEILLEURS SCORES", 3, 0, 255, 70);
+            drawText(ren, 60, 110, "# NOM                SCORE NIV TEMPS", 1, 220, 180, 0);
+            SDL_SetRenderDrawColor(ren, 0, 200, 50, 255);
+            SDL_RenderDrawLine(ren, 60, 126, SCREEN_WIDTH - 60, 126);
+            if (bg.scoreCount == 0)
+                drawTextCentered(ren, 200, 0, SCREEN_WIDTH, "AUCUN SCORE ENREGISTRE", 2, 0, 140, 35);
+            for (int s = 0; s < bg.scoreCount && s < MAX_SCORES; s++) {
+                Score *sc = &bg.scores[s];
+                char sline[80];
+                snprintf(sline, sizeof(sline), "%-3d %-20s %5d  %2d %02d:%02d",
+                         s+1, sc->name, sc->score, sc->level,
+                         sc->time / 60, sc->time % 60);
+                Uint8 sr = (Uint8)((s==0)?220:180);
+                Uint8 sg = (Uint8)((s==0)?180:255);
+                Uint8 sb2 = (Uint8)((s==0)?0:180);
+                drawText(ren, 60, 140 + s*22, sline, 1, sr, sg, sb2);
+            }
+            backBtn.hover = tbtnHit(&backBtn, mx, my);
             tbtnDraw(ren, &backBtn);
         }
 
@@ -775,6 +822,13 @@ int main(int argc, char *argv[]) {
                                 SCREEN_WIDTH/2, SCREEN_HEIGHT};
                 renderHalf(ren, &bg, &p2, &p1, vp2,
                            minions, MAX_MINIONS, &boss, bossActive);
+                /* Draw separator between the two halves */
+                SDL_RenderSetViewport(ren, NULL);
+                SDL_RenderSetClipRect(ren, NULL);
+                SDL_SetRenderDrawColor(ren, 0, 255, 70, 255);
+                SDL_RenderDrawLine(ren, SCREEN_WIDTH/2 - 1, 0, SCREEN_WIDTH/2 - 1, SCREEN_HEIGHT);
+                SDL_RenderDrawLine(ren, SCREEN_WIDTH/2,     0, SCREEN_WIDTH/2,     SCREEN_HEIGHT);
+                SDL_RenderDrawLine(ren, SCREEN_WIDTH/2 + 1, 0, SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT);
             } else {
                 afficherBackground(&bg, ren, MODE_MONO, NULL);
                 for (int i = 0; i < MAX_MINIONS; i++)
